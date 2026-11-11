@@ -37,7 +37,7 @@ deps(){
  for x in qemu-system-x86_64 qemu-img cloud-localds wget openssl python3 numfmt; do command -v "$x" >/dev/null 2>&1 || miss+=("$x"); done
  if (("${#miss[@]}")); then
   fail "Missing: ${miss[*]}"
-  info "Ubuntu/Debian: sudo apt install qemu-system-x86 qemu-utils cloud-image-utils wget openssl"
+  info "Ubuntu/Debian: sudo apt install qemu-system-x86 qemu-utils cloud-image-utils wget openssl python3 coreutils"
   exit 1
  fi
 }
