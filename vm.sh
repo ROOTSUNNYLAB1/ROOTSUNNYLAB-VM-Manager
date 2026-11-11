@@ -214,6 +214,8 @@ validate_input() {
             [[ "$value" =~ ^[YyNn]$ ]] || { print_status ERROR "Please answer y or n"; return 1; } ;;
         forwards)
             [[ -z "$value" || "$value" =~ ^[0-9]+:[0-9]+(,[0-9]+:[0-9]+)*$ ]] || { print_status ERROR "Use host:guest pairs, comma separated (e.g., 8080:80,8443:443)"; return 1; } ;;
+        pkgs)
+            [[ "$value" =~ ^[A-Za-z0-9.+_:@,\ -]*$ ]] || { print_status ERROR "Package names only (letters, digits . + _ - : @), separated by space or comma"; return 1; } ;;
         nonempty)
             [[ -n "$value" ]] || { print_status ERROR "This field cannot be empty"; return 1; } ;;
     esac
@@ -269,7 +271,7 @@ check_dependencies() {
 VM_DIR="${VM_DIR:-$HOME/vms}"
 CACHE_DIR="$VM_DIR/.cache"
 
-OS_ORDER=("Ubuntu 20.04" "Ubuntu 22.04" "Ubuntu 24.04" "Ubuntu 25.04" "Ubuntu 26.04" "Debian 11" "Debian 12" "Debian 13" "Fedora 40" "CentOS Stream 9" "AlmaLinux 8" "AlmaLinux 9" "Rocky Linux 8" "Rocky Linux 9" "Arch Linux" "openSUSE Leap 15.6" "openSUSE Tumbleweed" "Tiny Core 17" "Artix Linux" "Proxmox VE" "Custom (your URL)")
+OS_ORDER=("Ubuntu 20.04" "Ubuntu 22.04" "Ubuntu 24.04" "Ubuntu 25.04" "Ubuntu 26.04" "Debian 11" "Debian 12" "Debian 13" "Fedora 40" "CentOS Stream 9" "AlmaLinux 8" "AlmaLinux 9" "Rocky Linux 8" "Rocky Linux 9" "Arch Linux" "openSUSE Leap 15.6" "openSUSE Tumbleweed" "Proxmox VE")
 declare -A OS_OPTIONS=(
     ["Ubuntu 20.04"]="ubuntu|focal|https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img|ubuntu20|ubuntu|ubuntu"
     ["AlmaLinux 8"]="almalinux|8|https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.qcow2|almalinux8|alma|alma"
@@ -278,7 +280,6 @@ declare -A OS_OPTIONS=(
     ["openSUSE Leap 15.6"]="opensuse|leap15.6|https://download.opensuse.org/distribution/leap/15.6/appliances/openSUSE-Leap-15.6-Minimal-VM.x86_64-Cloud.qcow2|leap156|suse|suse"
     ["openSUSE Tumbleweed"]="opensuse|tumbleweed|https://download.opensuse.org/tumbleweed/appliances/openSUSE-Tumbleweed-Minimal-VM.x86_64-Cloud.qcow2|tumbleweed|suse|suse"
     ["Proxmox VE"]="proxmox|ve|AUTOPVE|pve|root|set-in-installer|iso-serial|4096|32G|8006:8006"
-    ["Custom (your URL)"]="custom|custom|ASK|myvm|user|user|cloud|2048|20G"
     ["Ubuntu 22.04"]="ubuntu|jammy|https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img|ubuntu22|ubuntu|ubuntu"
     ["Ubuntu 24.04"]="ubuntu|noble|https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img|ubuntu24|ubuntu|ubuntu"
     ["Ubuntu 25.04"]="ubuntu|plucky|https://cloud-images.ubuntu.com/releases/plucky/release/ubuntu-25.04-server-cloudimg-amd64.img|ubuntu25|ubuntu|ubuntu"
@@ -291,14 +292,12 @@ declare -A OS_OPTIONS=(
     ["AlmaLinux 9"]="almalinux|9|https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2|almalinux9|alma|alma"
     ["Rocky Linux 9"]="rockylinux|9|https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud.latest.x86_64.qcow2|rocky9|rocky|rocky"
     # fields: type|codename|url|hostname|user|password|mode|default-ram|default-disk   (mode: cloud | kernel | iso)
-    ["Tiny Core 17"]="tinycore|17.x|17.x/x86_64/release/distribution_files|tinycore|tc|none|kernel|512|2G"
-    ["Artix Linux"]="artix|openrc|AUTO|artix|artix|artix|iso|2048|20G"
 )
 
 # ------------------------------------------------------------------------------
 #  VM config storage
 # ------------------------------------------------------------------------------
-CFG_KEYS=(VM_NAME OS_TYPE CODENAME IMG_URL VM_HOSTNAME USERNAME PASSWORD DISK_SIZE MEMORY CPUS SSH_PORT GUI_MODE PORT_FORWARDS IMG_FILE SEED_FILE CREATED OS_MODE ISO_FILE ISO_BOOT)
+CFG_KEYS=(VM_NAME OS_TYPE CODENAME IMG_URL VM_HOSTNAME USERNAME PASSWORD DISK_SIZE MEMORY CPUS SSH_PORT GUI_MODE PORT_FORWARDS IMG_FILE SEED_FILE CREATED OS_MODE ISO_FILE ISO_BOOT EXTRA_PKGS STARTUP)
 
 get_vm_list() {
     find "$VM_DIR" -maxdepth 1 -name '*.conf' -printf '%f\n' 2>/dev/null | sed 's/\.conf$//' | sort
@@ -312,6 +311,7 @@ load_vm_config() {
     source "$f"
     VM_HOSTNAME="${VM_HOSTNAME:-${HOSTNAME:-$VM_NAME}}"   # old configs used HOSTNAME
     PORT_FORWARDS="${PORT_FORWARDS:-}"
+    EXTRA_PKGS="${EXTRA_PKGS:-}"; STARTUP="${STARTUP:-}"
     OS_MODE="${OS_MODE:-cloud}"; ISO_FILE="${ISO_FILE:-}"; ISO_BOOT="${ISO_BOOT:-true}"
     return 0
 }
@@ -454,6 +454,22 @@ chpasswd:
     $USERNAME:$PASSWORD
   expire: false
 EOF
+    if [[ -n ${EXTRA_PKGS:-} ]]; then
+        { echo "package_update: true"; echo "packages:"; local p; for p in $EXTRA_PKGS; do echo "  - $p"; done; } >> "$ud"
+    fi
+    if [[ -n ${STARTUP:-} ]]; then
+        local sc="$WORK/startup.sh"
+        if [[ -f $STARTUP ]]; then cp -- "$STARTUP" "$sc"; else printf '#!/bin/bash\n%s\n' "$STARTUP" > "$sc"; fi
+        {
+            echo "write_files:"
+            echo "  - path: /usr/local/bin/rsl-startup.sh"
+            echo "    permissions: '0755'"
+            echo "    encoding: b64"
+            echo "    content: $(base64 -w0 "$sc")"
+            echo "runcmd:"
+            echo "  - [ bash, /usr/local/bin/rsl-startup.sh ]"
+        } >> "$ud"
+    fi
     cat > "$md" <<EOF
 instance-id: iid-$VM_NAME-$(date +%s)
 local-hostname: $VM_HOSTNAME
@@ -488,11 +504,6 @@ create_new_vm() {
     local DEFAULT_HOSTNAME DEFAULT_USERNAME DEFAULT_PASSWORD DEF_MEM DEF_DISK DEF_FWD
     IFS='|' read -r OS_TYPE CODENAME IMG_URL DEFAULT_HOSTNAME DEFAULT_USERNAME DEFAULT_PASSWORD OS_MODE DEF_MEM DEF_DISK DEF_FWD <<< "${OS_OPTIONS[$os]}"
     OS_MODE=${OS_MODE:-cloud}; DEF_MEM=${DEF_MEM:-2048}; DEF_DISK=${DEF_DISK:-20G}; ISO_FILE=""; ISO_BOOT=true
-    if [[ $IMG_URL == ASK ]]; then
-        echo; ask IMG_URL "Image URL (cloud .img/.qcow2 or an .iso)" "" nonempty
-        CODENAME=$(basename "${IMG_URL%%\?*}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-40)
-        if [[ ${IMG_URL,,} == *.iso* ]]; then OS_MODE=iso; DEFAULT_USERNAME=live; DEFAULT_PASSWORD=live; DEF_DISK=20G; fi
-    fi
     echo
 
     while true; do
@@ -518,6 +529,14 @@ create_new_vm() {
     done
     GUI_MODE=false
     ask PORT_FORWARDS "Extra port forwards (host:guest,...)" "${DEF_FWD:-}" forwards
+
+    EXTRA_PKGS=""; STARTUP=""
+    if [[ $OS_MODE == cloud ]]; then
+        ask EXTRA_PKGS "Packages to install (e.g. htop git curl, Enter = none)" "" pkgs
+        EXTRA_PKGS=${EXTRA_PKGS//,/ }
+        ask STARTUP "Startup script (file path or one-line command, Enter = none)" ""
+        [[ -n $STARTUP && ! -f $STARTUP ]] && print_status INFO "Treating it as a command to run on first boot"
+    fi
 
     IMG_FILE="$VM_DIR/$VM_NAME.img"
     SEED_FILE="$VM_DIR/$VM_NAME-seed.iso"; [[ $OS_MODE == cloud ]] || SEED_FILE=""
@@ -546,12 +565,20 @@ start_vm() {
         for fw in "${fws[@]}"; do hostfwd+=",hostfwd=tcp::${fw%%:*}-:${fw##*:}"; done
     fi
 
+    # Faster NIC: modern virtio-net (packed ring, merged rx buffers, 10G link) when this QEMU supports it
+    local nic="virtio-net-pci,netdev=n0,mrg_rxbuf=on,speed=10000,duplex=full" nh
+    nh=$(qemu-system-x86_64 -device virtio-net-pci,help 2>&1)
+    [[ $nh == *packed* ]] && nic+=",packed=on"
+    local tcg="tcg"
+    timeout 3 qemu-system-x86_64 -machine none -accel tcg,thread=multi,tb-size=512 -display none -nodefaults -S >/dev/null 2>&1
+    (( $? == 124 )) && tcg="tcg,thread=multi,tb-size=512"
+
     local cmd=(
         qemu-system-x86_64
         -m "$MEMORY" -smp "$CPUS"
         -drive "file=$IMG_FILE,format=qcow2,if=virtio"
-        -device virtio-net-pci,netdev=n0
-        -netdev "user,id=n0,$hostfwd"
+        -device "$nic"
+        -netdev "user,id=n0,ipv6=off,$hostfwd"
         -device virtio-balloon-pci
         -object rng-random,filename=/dev/urandom,id=rng0
         -device virtio-rng-pci,rng=rng0
@@ -609,10 +636,10 @@ start_vm() {
             (( TTY )) && stty sane 2>/dev/null
             echo; print_status WARN "KVM failed (exit $rc) - falling back to NO KVM (software)"
             rm -f "$VM_DIR/$name.pid"; sleep 1
-            "${cmd[@]}" -accel tcg -cpu max
+            "${cmd[@]}" -accel "$tcg" -cpu max
         fi
     else
-        "${cmd[@]}" -accel tcg -cpu max
+        "${cmd[@]}" -accel "$tcg" -cpu max
     fi
     (( TTY )) && stty sane 2>/dev/null
     rm -f "$VM_DIR/$name.pid"
@@ -655,6 +682,8 @@ show_vm_info() {
     kv "Created"       "$CREATED"
     kv "Image file"    "$IMG_FILE"
     kv "Mode"          "$OS_MODE"
+    [[ -n $EXTRA_PKGS ]] && kv "Packages" "$EXTRA_PKGS"
+    [[ -n $STARTUP ]]    && kv "Startup" "$STARTUP"
     [[ -n $SEED_FILE ]] && kv "Seed file" "$SEED_FILE"
 }
 
@@ -686,6 +715,7 @@ edit_vm_config() {
         menu_item 1 "Hostname"; menu_item 2 "Username"; menu_item 3 "Password"
         menu_item 4 "SSH port"; menu_item 5 "Port forwards"
         menu_item 6 "Memory (RAM)"; menu_item 7 "CPU count"; menu_item 8 "Disk size"
+        if [[ $OS_MODE == cloud ]]; then menu_item 9 "Packages to install"; menu_item 10 "Startup script"; fi
         menu_item 0 "Back"
         echo
         ask c "Choice" "" 
@@ -702,11 +732,17 @@ edit_vm_config() {
             6) ask MEMORY "Memory (MB)" "$MEMORY" number ;;
             7) ask CPUS "CPU cores" "$CPUS" number ;;
             8) resize_vm_disk "$name"; load_vm_config "$name"; continue ;;
+            9)  [[ $OS_MODE == cloud ]] || { print_status ERROR "Cloud images only"; continue; }
+                ask EXTRA_PKGS "Packages (space/comma separated)" "$EXTRA_PKGS" pkgs; EXTRA_PKGS=${EXTRA_PKGS//,/ } ;;
+            10) [[ $OS_MODE == cloud ]] || { print_status ERROR "Cloud images only"; continue; }
+                ask STARTUP "Startup script (file path or command)" "$STARTUP" ;;
             0) return 0 ;;
             *) print_status ERROR "Invalid selection"; continue ;;
         esac
         save_vm_config
-        if [[ "$c" =~ ^[123]$ && $OS_MODE == cloud ]]; then build_seed; print_status INFO "Identity changes apply on next boot"; fi
+        if [[ "$c" =~ ^(1|2|3|9|10)$ && $OS_MODE == cloud ]]; then
+            build_seed; print_status INFO "Changes are applied by cloud-init on the next boot"
+        fi
         confirm "Continue editing?" || break
     done
 }
