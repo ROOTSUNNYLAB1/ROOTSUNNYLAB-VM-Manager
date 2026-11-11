@@ -12,7 +12,7 @@ set -uo pipefail
 APP_BRAND="ROOTSUNNYLAB"
 APP_SUB="Virtual Machine Manager"
 APP_VER="2.0"
-IW=68; COLS=80; BARW=34   # recomputed from the terminal size by layout()
+IW=68; COLS=80; BARW=34; PADS='  '   # recomputed from the terminal size by layout()
 
 # ------------------------------------------------------------------------------
 #  Terminal / theme  (muted classic palette, no neon)
@@ -49,6 +49,8 @@ layout() {
     [[ $c =~ ^[0-9]+$ ]] && (( c >= 20 )) || c=80
     COLS=$c
     IW=$(( COLS - 6 )); (( IW > 68 )) && IW=68; (( IW < 24 )) && IW=24
+    local pad=$(( (COLS - IW - 2) / 2 )); (( pad < 2 )) && pad=2
+    printf -v PADS '%*s' "$pad" ''
     BARW=$(( COLS - 42 )); (( BARW > 34 )) && BARW=34; (( BARW < 8 )) && BARW=8
 }
 trap layout WINCH
@@ -64,7 +66,7 @@ trap 'show_cursor; echo; exit 130' INT TERM
 box_row() {
     local t=$1 col=${2:-$C_TXT} n=${3:-${#1}} l r
     l=$(( (IW - n) / 2 )); r=$(( IW - n - l ))
-    printf '  %s║%s%*s%s%s%s%*s%s║%s\n' "$C_DIM" "$C_RST" "$l" "" "$col" "$t" "$C_RST" "$r" "" "$C_DIM" "$C_RST"
+    printf '%s%s║%s%*s%s%s%s%*s%s║%s\n' "$PADS" "$C_DIM" "$C_RST" "$l" "" "$col" "$t" "$C_RST" "$r" "" "$C_DIM" "$C_RST"
 }
 
 title_row() {   # $1 = shimmer position (any value outside the text = no shimmer)
@@ -76,7 +78,7 @@ title_row() {   # $1 = shimmer position (any value outside the text = no shimmer
         (( i >= hl - 2 && i <= hl )) && col=$C_HI
         out+="${C_B}${col}${ch}"
     done
-    printf '\r  %s║%s%*s%s%s%*s%s║%s' "$C_DIM" "$C_RST" "$pl" "" "$out" "$C_RST" "$pr" "" "$C_DIM" "$C_RST"
+    printf '\r%s%s║%s%*s%s%s%*s%s║%s' "$PADS" "$C_DIM" "$C_RST" "$pl" "" "$out" "$C_RST" "$pr" "" "$C_DIM" "$C_RST"
 }
 
 header() {
@@ -85,7 +87,7 @@ header() {
     (( TTY )) && clear
     line=$(rep '═' "$IW")
     echo
-    printf '  %s╔%s╗%s\n' "$C_DIM" "$line" "$C_RST"; nap 0.02
+    printf '%s%s╔%s╗%s\n' "$PADS" "$C_DIM" "$line" "$C_RST"; nap 0.02
     box_row "";                                        nap 0.02
     if (( animate && ANIM )); then
         hide_cursor
@@ -97,11 +99,11 @@ header() {
     box_row "$APP_SUB" "$C_TXT";                       nap 0.02
     box_row "Powered by ROOTSUNNY" "$C_DIM";           nap 0.02
     box_row "";                                        nap 0.02
-    printf '  %s╚%s╝%s\n' "$C_DIM" "$line" "$C_RST"
+    printf '%s%s╚%s╝%s\n' "$PADS" "$C_DIM" "$line" "$C_RST"
     foot="v$APP_VER  ·  QEMU  ·  cloud-init  ·  © $APP_BRAND"
     (( ${#foot} > IW + 2 )) && foot="v$APP_VER  ·  © $APP_BRAND"
     (( ${#foot} > IW + 2 )) && foot="© $APP_BRAND"
-    printf '  %s%s%s\n\n' "$C_DIM" "$(center "$foot" $((IW + 2)))" "$C_RST"
+    printf '%s%s%s%s\n\n' "$PADS" "$C_DIM" "$(center "$foot" $((IW + 2)))" "$C_RST"
 }
 
 # ------------------------------------------------------------------------------
@@ -423,8 +425,7 @@ create_new_vm() {
         if port_in_use "$SSH_PORT"; then print_status ERROR "Port $SSH_PORT is already in use"; continue; fi
         break
     done
-    local gui; ask gui "Enable GUI mode (y/n)" "n" yesno
-    GUI_MODE=false; [[ "$gui" =~ ^[Yy]$ ]] && GUI_MODE=true
+    GUI_MODE=false
     ask PORT_FORWARDS "Extra port forwards (host:guest,...)" "" forwards
 
     IMG_FILE="$VM_DIR/$VM_NAME.img"
@@ -467,17 +468,21 @@ start_vm() {
         -device virtio-rng-pci,rng=rng0
         -pidfile "$VM_DIR/$name.pid"
     )
-    if [[ "$GUI_MODE" == true ]]; then cmd+=(-vga virtio -display gtk,gl=on); else cmd+=(-nographic -serial mon:stdio); fi
+    # Console always runs inside THIS terminal (serial). A separate window only if RSL_GUI=1 is set explicitly.
+    local gui=false; [[ "${RSL_GUI:-0}" == "1" ]] && gui=true
+    if [[ $gui == true ]]; then cmd+=(-vga virtio -display gtk); else cmd+=(-nographic -serial mon:stdio); fi
 
     section "Launching $name"
     kv "Acceleration" "$accel"
     kv "Resources"    "$CPUS vCPU  ·  $MEMORY MB RAM  ·  $DISK_SIZE disk"
     kv "SSH"          "ssh -p $SSH_PORT $USERNAME@localhost"
     kv "Password"     "$PASSWORD"
-    [[ "$GUI_MODE" == true ]] || kv "Exit console" "Ctrl+A, then X"
+    kv "Console"      "this terminal (serial)"
+    kv "Exit console" "Ctrl+A, then X"
     echo
     progress_anim "Starting QEMU" 26
     "${cmd[@]}"
+    (( TTY )) && stty sane 2>/dev/null
     rm -f "$VM_DIR/$name.pid"
     echo; print_status INFO "VM '$name' has been shut down"
 }
@@ -513,7 +518,7 @@ show_vm_info() {
     kv "Memory"        "$MEMORY MB"
     kv "CPUs"          "$CPUS"
     kv "Disk"          "$DISK_SIZE"
-    kv "GUI mode"      "$GUI_MODE"
+    kv "Console"       "terminal (serial)"
     kv "Port forwards" "${PORT_FORWARDS:-None}"
     kv "Created"       "$CREATED"
     kv "Image file"    "$IMG_FILE"
@@ -540,14 +545,14 @@ resize_vm_disk() {
 }
 
 edit_vm_config() {
-    local name=$1 c tmp g
+    local name=$1 c tmp
     load_vm_config "$name" || return 1
     is_vm_running "$name" && print_status WARN "VM is running: changes apply on next start"
     while true; do
         section "Edit · $name"
         menu_item 1 "Hostname"; menu_item 2 "Username"; menu_item 3 "Password"
-        menu_item 4 "SSH port"; menu_item 5 "GUI mode"; menu_item 6 "Port forwards"
-        menu_item 7 "Memory (RAM)"; menu_item 8 "CPU count"; menu_item 9 "Disk size"
+        menu_item 4 "SSH port"; menu_item 5 "Port forwards"
+        menu_item 6 "Memory (RAM)"; menu_item 7 "CPU count"; menu_item 8 "Disk size"
         menu_item 0 "Back"
         echo
         ask c "Choice" "" 
@@ -560,12 +565,10 @@ edit_vm_config() {
                    if [[ "$tmp" != "$SSH_PORT" ]] && port_in_use "$tmp"; then print_status ERROR "Port $tmp is already in use"; continue; fi
                    SSH_PORT=$tmp; break
                done ;;
-            5) ask g "Enable GUI mode (y/n)" "$([[ $GUI_MODE == true ]] && echo y || echo n)" yesno
-               GUI_MODE=false; [[ "$g" =~ ^[Yy]$ ]] && GUI_MODE=true ;;
-            6) ask PORT_FORWARDS "Port forwards (host:guest,...)" "$PORT_FORWARDS" forwards ;;
-            7) ask MEMORY "Memory (MB)" "$MEMORY" number ;;
-            8) ask CPUS "CPU cores" "$CPUS" number ;;
-            9) resize_vm_disk "$name"; load_vm_config "$name"; continue ;;
+            5) ask PORT_FORWARDS "Port forwards (host:guest,...)" "$PORT_FORWARDS" forwards ;;
+            6) ask MEMORY "Memory (MB)" "$MEMORY" number ;;
+            7) ask CPUS "CPU cores" "$CPUS" number ;;
+            8) resize_vm_disk "$name"; load_vm_config "$name"; continue ;;
             0) return 0 ;;
             *) print_status ERROR "Invalid selection"; continue ;;
         esac
