@@ -12,11 +12,12 @@ set -uo pipefail
 APP_BRAND="ROOTSUNNYLAB"
 APP_SUB="Virtual Machine Manager"
 APP_VER="2.0"
-IW=68   # inner width of the banner box
+IW=68; COLS=80; BARW=34   # recomputed from the terminal size by layout()
 
 # ------------------------------------------------------------------------------
 #  Terminal / theme  (muted classic palette, no neon)
 # ------------------------------------------------------------------------------
+case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;; *) export LC_ALL=C.UTF-8 ;; esac
 TTY=0; [[ -t 1 ]] && TTY=1
 ANIM=$TTY; [[ "${NO_ANIM:-0}" == "1" ]] && ANIM=0
 ESC=$'\033'
@@ -39,6 +40,20 @@ show_cursor() { (( TTY )) && printf '%s[?25h' "$ESC"; return 0; }
 rep()         { local s; printf -v s '%*s' "$2" ''; printf '%s' "${s// /$1}"; }
 center()      { local t=$1 w=$2 l; l=$(( (w - ${#t}) / 2 )); (( l < 0 )) && l=0; printf '%*s%s' "$l" '' "$t"; }
 
+# Auto-fit: read the real terminal size and derive every width from it.
+layout() {
+    local c=0 r
+    if [[ -n "${RSL_COLS:-}" ]]; then c=$RSL_COLS
+    elif (( TTY )); then read -r r c < <(stty size </dev/tty 2>/dev/null) || c=0; fi
+    [[ $c =~ ^[0-9]+$ ]] && (( c >= 20 )) || c=${COLUMNS:-80}
+    [[ $c =~ ^[0-9]+$ ]] && (( c >= 20 )) || c=80
+    COLS=$c
+    IW=$(( COLS - 6 )); (( IW > 68 )) && IW=68; (( IW < 24 )) && IW=24
+    BARW=$(( COLS - 42 )); (( BARW > 34 )) && BARW=34; (( BARW < 8 )) && BARW=8
+}
+trap layout WINCH
+layout
+
 cleanup() { rm -rf "$WORK" "$LOG" 2>/dev/null; show_cursor; }
 trap cleanup EXIT
 trap 'show_cursor; echo; exit 130' INT TERM
@@ -54,6 +69,7 @@ box_row() {
 
 title_row() {   # $1 = shimmer position (any value outside the text = no shimmer)
     local hl=$1 t="R O O T S U N N Y   L A B" i ch col out="" pl pr
+    (( IW < ${#t} + 4 )) && t="ROOTSUNNYLAB"
     pl=$(( (IW - ${#t}) / 2 )); pr=$(( IW - ${#t} - pl ))
     for (( i = 0; i < ${#t}; i++ )); do
         ch=${t:i:1}; col=$C_ACC
@@ -64,7 +80,8 @@ title_row() {   # $1 = shimmer position (any value outside the text = no shimmer
 }
 
 header() {
-    local animate=${1:-0} line i
+    local animate=${1:-0} line i foot
+    layout
     (( TTY )) && clear
     line=$(rep '═' "$IW")
     echo
@@ -76,12 +93,15 @@ header() {
         show_cursor
     fi
     title_row -99; printf '\n';                        nap 0.02
-    box_row "$(rep '─' 24)" "$C_DIM" 24;                  nap 0.02
+    box_row "$(rep '─' $(( IW > 30 ? 24 : IW - 8 )))" "$C_DIM" $(( IW > 30 ? 24 : IW - 8 ));                  nap 0.02
     box_row "$APP_SUB" "$C_TXT";                       nap 0.02
     box_row "Powered by ROOTSUNNY" "$C_DIM";           nap 0.02
     box_row "";                                        nap 0.02
     printf '  %s╚%s╝%s\n' "$C_DIM" "$line" "$C_RST"
-    printf '  %s%s%s\n\n' "$C_DIM" "$(center "v$APP_VER  ·  QEMU  ·  cloud-init  ·  © $APP_BRAND" $((IW + 2)))" "$C_RST"
+    foot="v$APP_VER  ·  QEMU  ·  cloud-init  ·  © $APP_BRAND"
+    (( ${#foot} > IW + 2 )) && foot="v$APP_VER  ·  © $APP_BRAND"
+    (( ${#foot} > IW + 2 )) && foot="© $APP_BRAND"
+    printf '  %s%s%s\n\n' "$C_DIM" "$(center "$foot" $((IW + 2)))" "$C_RST"
 }
 
 # ------------------------------------------------------------------------------
@@ -102,7 +122,8 @@ print_status() {
 }
 
 section() {
-    printf '\n  %s── %s %s%s\n\n' "$C_ACC" "$1" "$(rep '─' $(( IW - ${#1} - 2 )))" "$C_RST"
+    local n=$(( IW - ${#1} - 2 )); (( n < 2 )) && n=2
+    printf '\n  %s── %s %s%s\n\n' "$C_ACC" "$1" "$(rep '─' "$n")" "$C_RST"
 }
 
 menu_item() {
@@ -121,7 +142,7 @@ typewrite() {
 }
 
 draw_bar() {    # $1 = percent, $2 = width
-    local pct=$1 w=${2:-34} f e fb eb
+    local pct=$1 w=${2:-$BARW} f e fb eb
     (( pct > 100 )) && pct=100; (( pct < 0 )) && pct=0
     f=$(( pct * w / 100 )); e=$(( w - f ))
     printf -v fb '%*s' "$f" ''; printf -v eb '%*s' "$e" ''
@@ -134,7 +155,7 @@ progress_anim() {   # $1 = label, $2 = steps
     hide_cursor
     for (( i = 0; i <= steps; i++ )); do
         p=$(( i * 100 / steps ))
-        printf '\r  %s%-24s%s %s %s%3d%%%s' "$C_TXT" "$label" "$C_RST" "$(draw_bar "$p")" "$C_DIM" "$p" "$C_RST"
+        printf '\r  %s%-22s%s %s %s%3d%%%s' "$C_TXT" "${label:0:22}" "$C_RST" "$(draw_bar "$p" $(( BARW - 2 )))" "$C_DIM" "$p" "$C_RST"
         sleep 0.025
     done
     printf '\n'; show_cursor
@@ -577,15 +598,16 @@ show_vm_performance() {
     (( TTY )) && clear
     hide_cursor
     while kill -0 "$pid" 2>/dev/null; do
+        layout
         read -r cpu rss etime < <(ps -p "$pid" -o %cpu=,rss=,etime= 2>/dev/null) || break
         cpu=${cpu%%.*}; cpu=${cpu:-0}
         rss_mb=$(( ${rss:-0} / 1024 ))
         cpu_pct=$(( cpu / CPUS )); mem_pct=$(( rss_mb * 100 / MEMORY ))
         vsize=$(du -h "$IMG_FILE" 2>/dev/null | cut -f1)
         (( TTY )) && printf '%s[H' "$ESC"
-        printf '\n  %s── Live performance · %s %s%s%s[K\n\n' "$C_ACC" "$name" "$(rep '─' 20)" "$C_RST" "$ESC"
-        printf '  %sCPU %s  %s %s%3d%%%s%s[K\n'  "$C_TXT" "      " "$(draw_bar "$cpu_pct" 36)" "$C_DIM" "$cpu_pct" "$C_RST" "$ESC"
-        printf '  %sRAM %s  %s %s%d / %d MB%s%s[K\n' "$C_TXT" "      " "$(draw_bar "$mem_pct" 36)" "$C_DIM" "$rss_mb" "$MEMORY" "$C_RST" "$ESC"
+        printf '\n  %s── Live performance · %s %s%s%s[K\n\n' "$C_ACC" "$name" "$(rep '─' $(( IW - 24 - ${#name} > 2 ? IW - 24 - ${#name} : 2 )))" "$C_RST" "$ESC"
+        printf '  %sCPU %s  %s %s%3d%%%s%s[K\n'  "$C_TXT" "      " "$(draw_bar "$cpu_pct" "$BARW")" "$C_DIM" "$cpu_pct" "$C_RST" "$ESC"
+        printf '  %sRAM %s  %s %s%d / %d MB%s%s[K\n' "$C_TXT" "      " "$(draw_bar "$mem_pct" "$BARW")" "$C_DIM" "$rss_mb" "$MEMORY" "$C_RST" "$ESC"
         printf '\n'
         printf '  %s│%s %s%-12s%s %s%s%s[K\n' "$C_DIM" "$C_RST" "$C_DIM" "PID"       "$C_RST" "$C_TXT" "$pid"    "$C_RST$ESC"
         printf '  %s│%s %s%-12s%s %s%s%s[K\n' "$C_DIM" "$C_RST" "$C_DIM" "Uptime"    "$C_RST" "$C_TXT" "$etime"  "$C_RST$ESC"
@@ -610,30 +632,62 @@ pick_vm() {
 }
 
 vm_table() {
-    local n=${#VMS[@]} i v st sc info mem cpus port os
+    local n=${#VMS[@]} i v st sc info mem cpus port os c out cell avail=$(( COLS - 4 ))
     if (( n == 0 )); then
         printf '  %sNo virtual machines yet. Choose 1 to create your first one.%s\n\n' "$C_DIM" "$C_RST"; return
     fi
-    local top mid bot
-    top="┌─$(rep '─' 3)─┬─$(rep '─' 18)─┬─$(rep '─' 10)─┬─$(rep '─' 16)─┬─$(rep '─' 15)─┬─$(rep '─' 5)─┐"
-    mid="├─$(rep '─' 3)─┼─$(rep '─' 18)─┼─$(rep '─' 10)─┼─$(rep '─' 16)─┼─$(rep '─' 15)─┼─$(rep '─' 5)─┤"
-    bot="└─$(rep '─' 3)─┴─$(rep '─' 18)─┴─$(rep '─' 10)─┴─$(rep '─' 16)─┴─$(rep '─' 15)─┴─$(rep '─' 5)─┘"
-    printf '  %s%s%s\n' "$C_DIM" "$top" "$C_RST"; nap 0.015
-    printf '  %s│%s %s%-3s%s %s│%s %s%-18s%s %s│%s %s%-10s%s %s│%s %s%-16s%s %s│%s %s%-15s%s %s│%s %s%-5s%s %s│%s\n' \
-        "$C_DIM" "$C_RST" "$C_ACC" "#" "$C_RST" "$C_DIM" "$C_RST" "$C_ACC" "NAME" "$C_RST" "$C_DIM" "$C_RST" "$C_ACC" "STATUS" "$C_RST" \
-        "$C_DIM" "$C_RST" "$C_ACC" "SYSTEM" "$C_RST" "$C_DIM" "$C_RST" "$C_ACC" "RESOURCES" "$C_RST" "$C_DIM" "$C_RST" "$C_ACC" "SSH" "$C_RST" "$C_DIM" "$C_RST"
-    printf '  %s%s%s\n' "$C_DIM" "$mid" "$C_RST"
+    local -a act=(num name status sys res ssh)
+    local -A W=([num]=3 [name]=18 [status]=9 [sys]=15 [res]=12 [ssh]=5)
+    local -A H=([num]="#" [name]="NAME" [status]="STATUS" [sys]="SYSTEM" [res]="RESOURCES" [ssh]="SSH")
+    tw()   { local t=1 k; for k in "${act[@]}"; do t=$(( t + W[$k] + 3 )); done; echo "$t"; }
+    has()  { local k; for k in "${act[@]}"; do [[ $k == "$1" ]] && return 0; done; return 1; }
+    drop() { local k keep=(); for k in "${act[@]}"; do [[ $k == "$1" ]] || keep+=("$k"); done; act=("${keep[@]}"); }
+    while (( $(tw) > avail )); do
+        if   (( W[name] > 12 )); then W[name]=$(( W[name] - 2 ))
+        elif has sys;            then drop sys
+        elif (( W[name] > 8 ));  then W[name]=$(( W[name] - 2 ))
+        elif has res;            then drop res
+        elif has ssh;            then drop ssh
+        elif (( W[name] > 5 ));  then W[name]=$(( W[name] - 1 ))
+        else break; fi
+    done
+    # use spare room on wide terminals
+    while (( $(tw) < avail && W[name] < 26 )); do W[name]=$(( W[name] + 1 )); done
+
+    border() {
+        local l=$1 m=$2 r=$3 k idx=0 last=$(( ${#act[@]} - 1 )) o="$1"
+        for k in "${act[@]}"; do
+            o+="$(rep '─' $(( W[$k] + 2 )))"
+            if (( idx == last )); then o+="$r"; else o+="$m"; fi
+            idx=$(( idx + 1 ))
+        done
+        printf '  %s%s%s\n' "$C_DIM" "$o" "$C_RST"
+    }
+    border '┌' '┬' '┐'; nap 0.015
+    out="${C_DIM}│${C_RST}"
+    for c in "${act[@]}"; do printf -v cell '%-*s' "${W[$c]}" "${H[$c]:0:${W[$c]}}"; out+=" ${C_ACC}${cell}${C_RST} ${C_DIM}│${C_RST}"; done
+    printf '  %s\n' "$out"
+    border '├' '┼' '┤'
     for (( i = 0; i < n; i++ )); do
         v=${VMS[i]}
         info=$( load_vm_config "$v" 2>/dev/null && echo "$MEMORY|$CPUS|$SSH_PORT|$OS_TYPE $CODENAME" )
         IFS='|' read -r mem cpus port os <<< "$info"
         if is_vm_running "$v"; then st="Running"; sc=$C_OK; else st="Stopped"; sc=$C_DIM; fi
-        printf '  %s│%s %-3s %s│%s %-18s %s│%s %s●%s %-8s %s│%s %-16s %s│%s %-15s %s│%s %-5s %s│%s\n' \
-            "$C_DIM" "$C_TXT" "$(( i + 1 ))" "$C_DIM" "$C_TXT" "${v:0:18}" "$C_DIM" "$C_RST" "$sc" "$C_TXT" "$st" \
-            "$C_DIM" "$C_TXT" "${os:0:16}" "$C_DIM" "$C_TXT" "${cpus}c / ${mem}M" "$C_DIM" "$C_TXT" "$port" "$C_DIM" "$C_RST"
-        nap 0.02
+        out="${C_DIM}│${C_RST}"
+        for c in "${act[@]}"; do
+            case $c in
+                num)    printf -v cell '%-*s' "${W[num]}" "$(( i + 1 ))" ;;
+                name)   printf -v cell '%-*s' "${W[name]}" "${v:0:${W[name]}}" ;;
+                status) printf -v cell '%-*s' "$(( W[status] - 2 ))" "$st"; cell="${sc}●${C_RST}${C_TXT} ${cell}" ;;
+                sys)    printf -v cell '%-*s' "${W[sys]}" "${os:0:${W[sys]}}" ;;
+                res)    printf -v cell '%-*s' "${W[res]}" "${cpus}c / ${mem}M" ;;
+                ssh)    printf -v cell '%-*s' "${W[ssh]}" "$port" ;;
+            esac
+            out+=" ${C_TXT}${cell}${C_RST} ${C_DIM}│${C_RST}"
+        done
+        printf '  %s\n' "$out"; nap 0.02
     done
-    printf '  %s%s%s\n\n' "$C_DIM" "$bot" "$C_RST"
+    border '└' '┴' '┘'; echo
 }
 
 main_menu() {
