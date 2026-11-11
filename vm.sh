@@ -269,8 +269,16 @@ check_dependencies() {
 VM_DIR="${VM_DIR:-$HOME/vms}"
 CACHE_DIR="$VM_DIR/.cache"
 
-OS_ORDER=("Ubuntu 22.04" "Ubuntu 24.04" "Ubuntu 25.04" "Ubuntu 26.04" "Debian 11" "Debian 12" "Debian 13" "Fedora 40" "CentOS Stream 9" "AlmaLinux 9" "Rocky Linux 9" "Tiny Core 17" "Artix Linux")
+OS_ORDER=("Ubuntu 20.04" "Ubuntu 22.04" "Ubuntu 24.04" "Ubuntu 25.04" "Ubuntu 26.04" "Debian 11" "Debian 12" "Debian 13" "Fedora 40" "CentOS Stream 9" "AlmaLinux 8" "AlmaLinux 9" "Rocky Linux 8" "Rocky Linux 9" "Arch Linux" "openSUSE Leap 15.6" "openSUSE Tumbleweed" "Tiny Core 17" "Artix Linux" "Proxmox VE" "Custom (your URL)")
 declare -A OS_OPTIONS=(
+    ["Ubuntu 20.04"]="ubuntu|focal|https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.img|ubuntu20|ubuntu|ubuntu"
+    ["AlmaLinux 8"]="almalinux|8|https://repo.almalinux.org/almalinux/8/cloud/x86_64/images/AlmaLinux-8-GenericCloud-latest.x86_64.qcow2|almalinux8|alma|alma"
+    ["Rocky Linux 8"]="rockylinux|8|https://dl.rockylinux.org/pub/rocky/8/images/x86_64/Rocky-8-GenericCloud.latest.x86_64.qcow2|rocky8|rocky|rocky"
+    ["Arch Linux"]="arch|rolling|https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2|arch|arch|arch"
+    ["openSUSE Leap 15.6"]="opensuse|leap15.6|https://download.opensuse.org/distribution/leap/15.6/appliances/openSUSE-Leap-15.6-Minimal-VM.x86_64-Cloud.qcow2|leap156|suse|suse"
+    ["openSUSE Tumbleweed"]="opensuse|tumbleweed|https://download.opensuse.org/tumbleweed/appliances/openSUSE-Tumbleweed-Minimal-VM.x86_64-Cloud.qcow2|tumbleweed|suse|suse"
+    ["Proxmox VE"]="proxmox|ve|AUTOPVE|pve|root|set-in-installer|iso-serial|4096|32G|8006:8006"
+    ["Custom (your URL)"]="custom|custom|ASK|myvm|user|user|cloud|2048|20G"
     ["Ubuntu 22.04"]="ubuntu|jammy|https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img|ubuntu22|ubuntu|ubuntu"
     ["Ubuntu 24.04"]="ubuntu|noble|https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img|ubuntu24|ubuntu|ubuntu"
     ["Ubuntu 25.04"]="ubuntu|plucky|https://cloud-images.ubuntu.com/releases/plucky/release/ubuntu-25.04-server-cloudimg-amd64.img|ubuntu25|ubuntu|ubuntu"
@@ -355,6 +363,7 @@ download_image() {  # $1 = url, $2 = output
 
 TC_MIRRORS=(https://ftp.nl.freebsd.org/os/Linux/distr/tinycorelinux https://tinycorelinux.net)
 ART_INDEXES=(https://download.artixlinux.org/weekly-iso/ https://iso.artixlinux.org/weekly-iso/)
+PVE_INDEXES=(https://enterprise.proxmox.com/iso/ https://download.proxmox.com/iso/)
 
 fetch_first() {   # fetch_first OUT url1 url2 ...   (tries mirrors in order)
     local out=$1 u; shift
@@ -366,6 +375,15 @@ resolve_artix() {   # prints newest artix-base-openrc ISO url
     local idx name
     for idx in "${ART_INDEXES[@]}"; do
         name=$(wget -qO- --timeout=15 "$idx" 2>/dev/null | grep -o 'artix-base-openrc-[0-9]*-x86_64\.iso' | sort -u | tail -n 1)
+        [[ -n $name ]] && { printf '%s%s' "$idx" "$name"; return 0; }
+    done
+    return 1
+}
+
+resolve_pve() {     # prints newest Proxmox VE ISO url
+    local idx name
+    for idx in "${PVE_INDEXES[@]}"; do
+        name=$(wget -qO- --timeout=15 "$idx" 2>/dev/null | grep -o 'proxmox-ve_[0-9][0-9.]*-[0-9][0-9]*\.iso' | sort -uV | tail -n 1)
         [[ -n $name ]] && { printf '%s%s' "$idx" "$name"; return 0; }
     done
     return 1
@@ -386,14 +404,14 @@ prepare_image() {
             fetch_first "$dir/$f" "${urls[@]}" || return 1
         done
         run_task "Creating data disk ($DISK_SIZE)" qemu-img create -f qcow2 "$IMG_FILE" "$DISK_SIZE" ;;
-    iso)
+    iso|iso-serial)
         local url=$IMG_URL
-        if [[ $url == AUTO ]]; then
-            print_status INFO "Looking up the latest Artix ISO"
-            url=$(resolve_artix) || url=""
+        if [[ $url == AUTO || $url == AUTOPVE ]]; then
+            print_status INFO "Looking up the latest ISO"
+            if [[ $url == AUTO ]]; then url=$(resolve_artix) || url=""; else url=$(resolve_pve) || url=""; fi
             if [[ -z $url ]]; then
                 print_status WARN "Could not auto-detect the ISO"
-                ask url "Paste the Artix ISO URL" "" nonempty
+                ask url "Paste the ISO URL" "" nonempty
             fi
         fi
         IMG_URL=$url
@@ -467,9 +485,14 @@ create_new_vm() {
         print_status ERROR "Invalid selection"
     done
     os="${OS_ORDER[choice-1]}"
-    local DEFAULT_HOSTNAME DEFAULT_USERNAME DEFAULT_PASSWORD DEF_MEM DEF_DISK
-    IFS='|' read -r OS_TYPE CODENAME IMG_URL DEFAULT_HOSTNAME DEFAULT_USERNAME DEFAULT_PASSWORD OS_MODE DEF_MEM DEF_DISK <<< "${OS_OPTIONS[$os]}"
+    local DEFAULT_HOSTNAME DEFAULT_USERNAME DEFAULT_PASSWORD DEF_MEM DEF_DISK DEF_FWD
+    IFS='|' read -r OS_TYPE CODENAME IMG_URL DEFAULT_HOSTNAME DEFAULT_USERNAME DEFAULT_PASSWORD OS_MODE DEF_MEM DEF_DISK DEF_FWD <<< "${OS_OPTIONS[$os]}"
     OS_MODE=${OS_MODE:-cloud}; DEF_MEM=${DEF_MEM:-2048}; DEF_DISK=${DEF_DISK:-20G}; ISO_FILE=""; ISO_BOOT=true
+    if [[ $IMG_URL == ASK ]]; then
+        echo; ask IMG_URL "Image URL (cloud .img/.qcow2 or an .iso)" "" nonempty
+        CODENAME=$(basename "${IMG_URL%%\?*}" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-40)
+        if [[ ${IMG_URL,,} == *.iso* ]]; then OS_MODE=iso; DEFAULT_USERNAME=live; DEFAULT_PASSWORD=live; DEF_DISK=20G; fi
+    fi
     echo
 
     while true; do
@@ -494,7 +517,7 @@ create_new_vm() {
         break
     done
     GUI_MODE=false
-    ask PORT_FORWARDS "Extra port forwards (host:guest,...)" "" forwards
+    ask PORT_FORWARDS "Extra port forwards (host:guest,...)" "${DEF_FWD:-}" forwards
 
     IMG_FILE="$VM_DIR/$VM_NAME.img"
     SEED_FILE="$VM_DIR/$VM_NAME-seed.iso"; [[ $OS_MODE == cloud ]] || SEED_FILE=""
@@ -545,7 +568,7 @@ start_vm() {
         append="loglevel=3 host=$VM_HOSTNAME"
         (( have_curses )) || append+=" console=ttyS0"
         cmd+=(-kernel "$kd/vmlinuz64" -initrd "$kd/corepure64.gz" -append "$append") ;;
-    iso)
+    iso|iso-serial)
         local boot_iso=n
         if [[ -s $ISO_FILE ]]; then
             local def=y; [[ $ISO_BOOT == false ]] && def=n
@@ -556,13 +579,13 @@ start_vm() {
         else cmd+=(-boot order=c); fi ;;
     esac
     # Kernel/ISO systems draw a text screen: shown INSIDE this terminal via curses (no separate window).
-    if [[ $OS_MODE != cloud ]] && (( have_curses )); then
+    if [[ $OS_MODE != cloud && $OS_MODE != iso-serial ]] && (( have_curses )); then
         exit_hint="Alt+2 (or Esc then 2), type: quit"; console="this terminal (text screen)"
     fi
     # Console always runs inside THIS terminal (serial). A separate window only if RSL_GUI=1 is set explicitly.
     local gui=false; [[ "${RSL_GUI:-0}" == "1" ]] && gui=true
     if [[ $gui == true ]]; then cmd+=(-vga virtio -display gtk)
-    elif [[ $OS_MODE != cloud ]] && (( have_curses )); then cmd+=(-vga std -display curses)
+    elif [[ $OS_MODE != cloud && $OS_MODE != iso-serial ]] && (( have_curses )); then cmd+=(-vga std -display curses)
     else cmd+=(-nographic -serial mon:stdio); fi
 
     section "Launching $name"
@@ -570,6 +593,11 @@ start_vm() {
     kv "Resources"    "$CPUS vCPU  ·  $MEMORY MB RAM  ·  $DISK_SIZE disk"
     if [[ $OS_MODE == cloud ]]; then kv "SSH" "ssh -p $SSH_PORT $USERNAME@localhost"; fi
     kv "Login"        "$USERNAME / $PASSWORD"
+    if [[ $OS_TYPE == proxmox ]]; then
+        kv "Installer"    "pick: Install Proxmox VE (Terminal UI, Serial Console)"
+        kv "Web UI"       "https://localhost:8006  (after install)"
+        (( use_kvm )) || print_status WARN "No KVM: Proxmox will be very slow in software mode"
+    fi
     kv "Console"      "$console"
     kv "Exit console" "$exit_hint"
     echo
