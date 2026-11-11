@@ -269,12 +269,15 @@ check_dependencies() {
 VM_DIR="${VM_DIR:-$HOME/vms}"
 CACHE_DIR="$VM_DIR/.cache"
 
-OS_ORDER=("Ubuntu 22.04" "Ubuntu 24.04" "Debian 11" "Debian 12" "Fedora 40" "CentOS Stream 9" "AlmaLinux 9" "Rocky Linux 9")
+OS_ORDER=("Ubuntu 22.04" "Ubuntu 24.04" "Ubuntu 25.04" "Ubuntu 26.04" "Debian 11" "Debian 12" "Debian 13" "Fedora 40" "CentOS Stream 9" "AlmaLinux 9" "Rocky Linux 9")
 declare -A OS_OPTIONS=(
     ["Ubuntu 22.04"]="ubuntu|jammy|https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img|ubuntu22|ubuntu|ubuntu"
     ["Ubuntu 24.04"]="ubuntu|noble|https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img|ubuntu24|ubuntu|ubuntu"
+    ["Ubuntu 25.04"]="ubuntu|plucky|https://cloud-images.ubuntu.com/releases/plucky/release/ubuntu-25.04-server-cloudimg-amd64.img|ubuntu25|ubuntu|ubuntu"
+    ["Ubuntu 26.04"]="ubuntu|resolute|https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img|ubuntu26|ubuntu|ubuntu"
     ["Debian 11"]="debian|bullseye|https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2|debian11|debian|debian"
     ["Debian 12"]="debian|bookworm|https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2|debian12|debian|debian"
+    ["Debian 13"]="debian|trixie|https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2|debian13|debian|debian"
     ["Fedora 40"]="fedora|40|https://download.fedoraproject.org/pub/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-40-1.14.x86_64.qcow2|fedora40|fedora|fedora"
     ["CentOS Stream 9"]="centos|stream9|https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2|centos9|centos|centos"
     ["AlmaLinux 9"]="almalinux|9|https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2|almalinux9|alma|alma"
@@ -392,6 +395,16 @@ EOF
 }
 
 # ------------------------------------------------------------------------------
+#  KVM auto-detect (real probe, not just a /dev/kvm check)
+# ------------------------------------------------------------------------------
+kvm_ok() {
+    [[ -r /dev/kvm && -w /dev/kvm ]] || return 1
+    command -v timeout &>/dev/null || return 0
+    timeout 5 qemu-system-x86_64 -machine none,accel=kvm -display none -nodefaults -S >/dev/null 2>&1
+    [[ $? -eq 124 ]]    # still alive after 5s = KVM works
+}
+
+# ------------------------------------------------------------------------------
 #  Actions
 # ------------------------------------------------------------------------------
 create_new_vm() {
@@ -446,8 +459,8 @@ start_vm() {
     [[ -f $IMG_FILE ]] || { print_status ERROR "VM image not found: $IMG_FILE"; return 1; }
     if [[ ! -f $SEED_FILE ]]; then print_status WARN "Seed file missing, rebuilding"; build_seed || return 1; fi
 
-    local accel="TCG (software)" cpu=(-cpu qemu64)
-    if [[ -r /dev/kvm && -w /dev/kvm ]]; then accel="KVM (hardware)"; cpu=(-enable-kvm -cpu host); fi
+    local accel="NO KVM (software)" use_kvm=0
+    kvm_ok && { use_kvm=1; accel="KVM (hardware)"; }
 
     local hostfwd="hostfwd=tcp::${SSH_PORT}-:22" fw fws=()
     if [[ -n $PORT_FORWARDS ]]; then
@@ -457,7 +470,7 @@ start_vm() {
 
     local cmd=(
         qemu-system-x86_64
-        -m "$MEMORY" -smp "$CPUS" "${cpu[@]}"
+        -m "$MEMORY" -smp "$CPUS"
         -drive "file=$IMG_FILE,format=qcow2,if=virtio"
         -drive "file=$SEED_FILE,format=raw,if=virtio"
         -boot order=c
@@ -481,7 +494,18 @@ start_vm() {
     kv "Exit console" "Ctrl+A, then X"
     echo
     progress_anim "Starting QEMU" 26
-    "${cmd[@]}"
+    local rc=0 t0=$SECONDS
+    if (( use_kvm )); then
+        "${cmd[@]}" -accel kvm -cpu host; rc=$?
+        if (( rc != 0 && SECONDS - t0 < 25 )); then
+            (( TTY )) && stty sane 2>/dev/null
+            echo; print_status WARN "KVM failed (exit $rc) - falling back to NO KVM (software)"
+            rm -f "$VM_DIR/$name.pid"; sleep 1
+            "${cmd[@]}" -accel tcg -cpu max
+        fi
+    else
+        "${cmd[@]}" -accel tcg -cpu max
+    fi
     (( TTY )) && stty sane 2>/dev/null
     rm -f "$VM_DIR/$name.pid"
     echo; print_status INFO "VM '$name' has been shut down"
