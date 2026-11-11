@@ -17,4 +17,4 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run ShellCheck
-        run: shellcheck -S warning nokvm.sh
+        run: shellcheck -S error nokvm.sh
