@@ -2,7 +2,7 @@
 # ROOTSUNNYLAB VM Manager — standalone QEMU cloud-image manager
 set -Eeuo pipefail
 IFS=$'\n\t'
-VERSION="2.0.0"
+VERSION="3.0.0"
 VM_DIR="${VM_DIR:-$HOME/.local/share/rootsunny-vm-manager/vms}"
 STATE_DIR="${STATE_DIR:-$HOME/.local/state/rootsunny-vm-manager}"
 declare -A OS=(
@@ -10,6 +10,8 @@ declare -A OS=(
  ["Ubuntu 22.04"]="https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img|ubuntu"
  ["Debian 12"]="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2|debian"
  ["Debian 11"]="https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-generic-amd64.qcow2|debian"
+ ["Fedora 40"]="https://download.fedoraproject.org/pub/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-40-1.14.x86_64.qcow2|fedora"
+ ["CentOS Stream 9"]="https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2|cloud-user"
  ["AlmaLinux 9"]="https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2|almalinux"
  ["Rocky Linux 9"]="https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud.latest.x86_64.qcow2|rocky"
 )
@@ -196,6 +198,8 @@ select_vm(){
   start) start_vm "$name";;
   stop) stop_vm "$name";;
   info) show_info "$name";;
+  edit) edit_vm_config "$name";;
+  performance) show_vm_performance "$name";;
   resize) resize_vm "$name";;
   delete) delete_vm "$name";;
  esac
@@ -221,6 +225,76 @@ delete_vm(){
  rm -f "$(disk "$VM_NAME")" "$(seed "$VM_NAME")" "$(cfg "$VM_NAME")" "$STATE_DIR/$VM_NAME.log" "$(pidfile "$VM_NAME")"
  good "Deleted $VM_NAME."
 }
+edit_vm_config(){
+ local name="$1" choice value password hash="" refresh_seed=false
+ load "$name" || return
+ while true; do
+  header
+  printf '  EDIT VM CONFIGURATION — %s\n\n' "$name"
+  cat <<'EOF'
+  1) Hostname
+  2) Username
+  3) Password
+  4) SSH port
+  5) GUI mode
+  6) Port forwards
+  7) RAM
+  8) CPU cores
+  9) Save changes
+  0) Cancel
+EOF
+  read -r -p "  Select: " choice || return
+  case "$choice" in
+   1) read -r -p "  New hostname [$HOSTNAME]: " value; value="${value:-$HOSTNAME}"; valid_name "$value" || { fail "Invalid hostname."; pause; continue; }; HOSTNAME="$value"; refresh_seed=true;;
+   2) read -r -p "  New username [$USERNAME]: " value; value="${value:-$USERNAME}"; valid_user "$value" || { fail "Invalid username."; pause; continue; }; USERNAME="$value"; refresh_seed=true;;
+   3) read -r -s -p "  New password (hidden): " password; echo; [[ -n "$password" ]] || { fail "Password cannot be empty."; pause; continue; }; hash="$(openssl passwd -6 "$password")"; unset password; refresh_seed=true;;
+   4) read -r -p "  New SSH port [$SSH_PORT]: " value; value="${value:-$SSH_PORT}"; port_free "$value" || { fail "Port unavailable or invalid."; pause; continue; }; SSH_PORT="$value";;
+   5) read -r -p "  Enable GUI? (y/N): " value; GUI_MODE=false; [[ "$value" =~ ^[Yy]$ ]] && GUI_MODE=true;;
+   6) read -r -p "  Extra forwards host:guest: " value; forwards_ok "$value" || { fail "Invalid or busy port forward."; pause; continue; }; PORT_FORWARDS="$value";;
+   7) read -r -p "  RAM MB [$MEMORY]: " value; value="${value:-$MEMORY}"; [[ "$value" =~ ^[1-9][0-9]*$ ]] || { fail "Invalid RAM value."; pause; continue; }; MEMORY="$value";;
+   8) read -r -p "  CPU cores [$CPUS]: " value; value="${value:-$CPUS}"; [[ "$value" =~ ^[1-9][0-9]*$ ]] || { fail "Invalid CPU count."; pause; continue; }; CPUS="$value";;
+   9)
+    if [[ "$refresh_seed" == true ]]; then
+     if [[ -z "$hash" ]]; then
+      read -r -s -p "  Re-enter guest password to rebuild cloud-init (hidden): " password; echo
+      [[ -n "$password" ]] || { fail "Password required to update cloud-init."; pause; continue; }
+      hash="$(openssl passwd -6 "$password")"; unset password
+     fi
+     make_seed "$name" "$hash" || { pause; continue; }
+    fi
+    save; good "VM configuration saved."; return;;
+   0) warn "Changes discarded."; return;;
+   *) warn "Invalid option.";;
+  esac
+ done
+}
+
+show_vm_performance(){
+ local name="$1" pid
+ load "$name" || return
+ echo
+ echo "PERFORMANCE MONITOR — $name"
+ echo "------------------------------------------------------------"
+ if running "$name"; then
+  read -r pid < "$(pidfile "$name")"
+  echo "QEMU process:"
+  ps -p "$pid" -o pid=,pcpu=,pmem=,rss=,etime=,stat=,comm=
+  echo
+  echo "Host memory:"
+  free -h
+  echo
+  echo "VM disk file:"
+  du -h "$(disk "$name")"
+  echo
+  echo "QEMU command:"
+  ps -p "$pid" -o args=
+ else
+  info "VM is stopped."
+  printf 'Configured RAM: %s MB | CPUs: %s | Disk: %s\n' "$MEMORY" "$CPUS" "$DISK_SIZE"
+ fi
+ echo "------------------------------------------------------------"
+}
+
 main(){
  deps; mkdir -p "$VM_DIR" "$STATE_DIR"; chmod 700 "$VM_DIR" "$STATE_DIR"
  while true; do
@@ -234,8 +308,10 @@ main(){
   2) Start VM
   3) Stop VM
   4) VM information
-  5) Resize disk
+  5) Edit VM configuration
   6) Delete VM
+  7) Resize disk
+  8) Show VM performance
   0) Exit
 EOF
   read -r -p "Select: " choice || break
@@ -244,8 +320,10 @@ EOF
    2) select_vm start;;
    3) select_vm stop;;
    4) select_vm info;;
-   5) select_vm resize;;
+   5) select_vm edit;;
    6) select_vm delete;;
+   7) select_vm resize;;
+   8) select_vm performance;;
    0) info "Goodbye."; break;;
    *) warn "Invalid option."; sleep 1;;
   esac
