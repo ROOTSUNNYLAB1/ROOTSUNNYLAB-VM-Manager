@@ -34,17 +34,6 @@ chmod +x nokvm.sh
 ./nokvm.sh
 ```
 
-## Storage locations
-
-- VM disks, cloud-init seed images and configuration: `~/.local/share/rootsunny-vm-manager/vms`
-- QEMU PID files and logs: `~/.local/state/rootsunny-vm-manager`
-
-Override the locations with `VM_DIR` and `STATE_DIR`:
-
-```bash
-VM_DIR="$HOME/my-vms" STATE_DIR="$HOME/my-vm-state" ./nokvm.sh
-```
-
 ## SSH access
 
 Use the host port and guest username selected during VM creation. For example:
