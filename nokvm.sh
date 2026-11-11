@@ -22,7 +22,7 @@ fail(){ printf '\033[1;31m[FAIL]\033[0m %s\n' "$*" >&2; }
 pause(){ read -r -p "Press Enter to continue..." _ || true; }
 header(){
  clear 2>/dev/null || true
- printf '\033[1;36m'
+ printf '\033[1;34m'
  cat <<'EOF'
   ____   ___   ___ _____ _   _ _   _ _   _ _   _
  |  _ \ / _ \ / _ \_   _| | | | \ | | \ | | \ | |
@@ -216,7 +216,7 @@ resize_vm(){
  valid_size "$size" || { fail "Invalid size."; return; }
  local old_bytes new_bytes
  old_bytes="$(qemu-img info --output=json "$(disk "$VM_NAME")" | python3 -c 'import json,sys;print(json.load(sys.stdin)["virtual-size"])')" || return
- new_bytes="$(numfmt --from=iec "$size" 2>/dev/null)" || { fail "Could not parse disk size."; return; }
+ new_bytes="$(numfmt --from=auto "$size" 2>/dev/null)" || { fail "Could not parse disk size."; return; }
  ((new_bytes >= old_bytes)) || { fail "Disk shrinking is disabled to protect VM data. Only expansion is supported."; return; }
  qemu-img resize "$(disk "$VM_NAME")" "$size" && { DISK_SIZE="$size"; save; good "Disk expanded. Grow the guest filesystem separately if needed."; }
 }
