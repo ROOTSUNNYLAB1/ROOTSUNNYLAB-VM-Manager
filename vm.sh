@@ -269,7 +269,7 @@ check_dependencies() {
 VM_DIR="${VM_DIR:-$HOME/vms}"
 CACHE_DIR="$VM_DIR/.cache"
 
-OS_ORDER=("Ubuntu 22.04" "Ubuntu 24.04" "Ubuntu 25.04" "Ubuntu 26.04" "Debian 11" "Debian 12" "Debian 13" "Fedora 40" "CentOS Stream 9" "AlmaLinux 9" "Rocky Linux 9")
+OS_ORDER=("Ubuntu 22.04" "Ubuntu 24.04" "Ubuntu 25.04" "Ubuntu 26.04" "Debian 11" "Debian 12" "Debian 13" "Fedora 40" "CentOS Stream 9" "AlmaLinux 9" "Rocky Linux 9" "Tiny Core 17" "Artix Linux")
 declare -A OS_OPTIONS=(
     ["Ubuntu 22.04"]="ubuntu|jammy|https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img|ubuntu22|ubuntu|ubuntu"
     ["Ubuntu 24.04"]="ubuntu|noble|https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img|ubuntu24|ubuntu|ubuntu"
@@ -282,12 +282,15 @@ declare -A OS_OPTIONS=(
     ["CentOS Stream 9"]="centos|stream9|https://cloud.centos.org/centos/9-stream/x86_64/images/CentOS-Stream-GenericCloud-9-latest.x86_64.qcow2|centos9|centos|centos"
     ["AlmaLinux 9"]="almalinux|9|https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2|almalinux9|alma|alma"
     ["Rocky Linux 9"]="rockylinux|9|https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud.latest.x86_64.qcow2|rocky9|rocky|rocky"
+    # fields: type|codename|url|hostname|user|password|mode|default-ram|default-disk   (mode: cloud | kernel | iso)
+    ["Tiny Core 17"]="tinycore|17.x|17.x/x86_64/release/distribution_files|tinycore|tc|none|kernel|512|2G"
+    ["Artix Linux"]="artix|openrc|AUTO|artix|artix|artix|iso|2048|20G"
 )
 
 # ------------------------------------------------------------------------------
 #  VM config storage
 # ------------------------------------------------------------------------------
-CFG_KEYS=(VM_NAME OS_TYPE CODENAME IMG_URL VM_HOSTNAME USERNAME PASSWORD DISK_SIZE MEMORY CPUS SSH_PORT GUI_MODE PORT_FORWARDS IMG_FILE SEED_FILE CREATED)
+CFG_KEYS=(VM_NAME OS_TYPE CODENAME IMG_URL VM_HOSTNAME USERNAME PASSWORD DISK_SIZE MEMORY CPUS SSH_PORT GUI_MODE PORT_FORWARDS IMG_FILE SEED_FILE CREATED OS_MODE ISO_FILE ISO_BOOT)
 
 get_vm_list() {
     find "$VM_DIR" -maxdepth 1 -name '*.conf' -printf '%f\n' 2>/dev/null | sed 's/\.conf$//' | sort
@@ -301,6 +304,7 @@ load_vm_config() {
     source "$f"
     VM_HOSTNAME="${VM_HOSTNAME:-${HOSTNAME:-$VM_NAME}}"   # old configs used HOSTNAME
     PORT_FORWARDS="${PORT_FORWARDS:-}"
+    OS_MODE="${OS_MODE:-cloud}"; ISO_FILE="${ISO_FILE:-}"; ISO_BOOT="${ISO_BOOT:-true}"
     return 0
 }
 
@@ -349,20 +353,65 @@ download_image() {  # $1 = url, $2 = output
     fi
 }
 
+TC_MIRRORS=(https://ftp.nl.freebsd.org/os/Linux/distr/tinycorelinux https://tinycorelinux.net)
+ART_INDEXES=(https://download.artixlinux.org/weekly-iso/ https://iso.artixlinux.org/weekly-iso/)
+
+fetch_first() {   # fetch_first OUT url1 url2 ...   (tries mirrors in order)
+    local out=$1 u; shift
+    for u in "$@"; do download_image "$u" "$out" && return 0; done
+    return 1
+}
+
+resolve_artix() {   # prints newest artix-base-openrc ISO url
+    local idx name
+    for idx in "${ART_INDEXES[@]}"; do
+        name=$(wget -qO- --timeout=15 "$idx" 2>/dev/null | grep -o 'artix-base-openrc-[0-9]*-x86_64\.iso' | sort -u | tail -n 1)
+        [[ -n $name ]] && { printf '%s%s' "$idx" "$name"; return 0; }
+    done
+    return 1
+}
+
 prepare_image() {
     mkdir -p "$VM_DIR" "$CACHE_DIR"
-    local base="$CACHE_DIR/${OS_TYPE}-${CODENAME}.img"
     if [[ -f $IMG_FILE ]]; then
         print_status INFO "VM disk already exists, keeping it"; return 0
     fi
-    if [[ -s $base ]]; then
-        print_status INFO "Using cached base image"
-    else
-        download_image "$IMG_URL" "$base" || return 1
-    fi
-    run_task "Creating VM disk" cp -- "$base" "$IMG_FILE" || return 1
-    run_task "Resizing disk to $DISK_SIZE" qemu-img resize "$IMG_FILE" "$DISK_SIZE" \
-        || print_status WARN "Resize skipped (requested size may be smaller than the base image)"
+    case $OS_MODE in
+    kernel)
+        local dir="$CACHE_DIR/${OS_TYPE}-${CODENAME}" f m urls
+        mkdir -p "$dir"
+        for f in vmlinuz64 corepure64.gz; do
+            if [[ -s $dir/$f ]]; then print_status INFO "Using cached $f"; continue; fi
+            urls=(); for m in "${TC_MIRRORS[@]}"; do urls+=("$m/$IMG_URL/$f"); done
+            fetch_first "$dir/$f" "${urls[@]}" || return 1
+        done
+        run_task "Creating data disk ($DISK_SIZE)" qemu-img create -f qcow2 "$IMG_FILE" "$DISK_SIZE" ;;
+    iso)
+        local url=$IMG_URL
+        if [[ $url == AUTO ]]; then
+            print_status INFO "Looking up the latest Artix ISO"
+            url=$(resolve_artix) || url=""
+            if [[ -z $url ]]; then
+                print_status WARN "Could not auto-detect the ISO"
+                ask url "Paste the Artix ISO URL" "" nonempty
+            fi
+        fi
+        IMG_URL=$url
+        ISO_FILE="$CACHE_DIR/${url##*/}"
+        if [[ -s $ISO_FILE ]]; then print_status INFO "Using cached ISO"; else fetch_first "$ISO_FILE" "$url" || return 1; fi
+        ISO_BOOT=true
+        run_task "Creating disk ($DISK_SIZE)" qemu-img create -f qcow2 "$IMG_FILE" "$DISK_SIZE" ;;
+    *)
+        local base="$CACHE_DIR/${OS_TYPE}-${CODENAME}.img"
+        if [[ -s $base ]]; then
+            print_status INFO "Using cached base image"
+        else
+            download_image "$IMG_URL" "$base" || return 1
+        fi
+        run_task "Creating VM disk" cp -- "$base" "$IMG_FILE" || return 1
+        run_task "Resizing disk to $DISK_SIZE" qemu-img resize "$IMG_FILE" "$DISK_SIZE" \
+            || print_status WARN "Resize skipped (requested size may be smaller than the base image)" ;;
+    esac
     return 0
 }
 
@@ -418,8 +467,9 @@ create_new_vm() {
         print_status ERROR "Invalid selection"
     done
     os="${OS_ORDER[choice-1]}"
-    local DEFAULT_HOSTNAME DEFAULT_USERNAME DEFAULT_PASSWORD
-    IFS='|' read -r OS_TYPE CODENAME IMG_URL DEFAULT_HOSTNAME DEFAULT_USERNAME DEFAULT_PASSWORD <<< "${OS_OPTIONS[$os]}"
+    local DEFAULT_HOSTNAME DEFAULT_USERNAME DEFAULT_PASSWORD DEF_MEM DEF_DISK
+    IFS='|' read -r OS_TYPE CODENAME IMG_URL DEFAULT_HOSTNAME DEFAULT_USERNAME DEFAULT_PASSWORD OS_MODE DEF_MEM DEF_DISK <<< "${OS_OPTIONS[$os]}"
+    OS_MODE=${OS_MODE:-cloud}; DEF_MEM=${DEF_MEM:-2048}; DEF_DISK=${DEF_DISK:-20G}; ISO_FILE=""; ISO_BOOT=true
     echo
 
     while true; do
@@ -428,10 +478,15 @@ create_new_vm() {
         break
     done
     ask VM_HOSTNAME "Hostname"      "$VM_NAME"         name
-    ask USERNAME    "Username"      "$DEFAULT_USERNAME" username
-    ask_secret PASSWORD "Password"  "$DEFAULT_PASSWORD"
-    ask DISK_SIZE   "Disk size"     "20G"              size
-    ask MEMORY      "Memory (MB)"   "2048"             number
+    if [[ $OS_MODE == cloud ]]; then
+        ask USERNAME    "Username"      "$DEFAULT_USERNAME" username
+        ask_secret PASSWORD "Password"  "$DEFAULT_PASSWORD"
+    else
+        USERNAME=$DEFAULT_USERNAME; PASSWORD=$DEFAULT_PASSWORD
+        print_status INFO "Live system - login: $USERNAME / $PASSWORD"
+    fi
+    ask DISK_SIZE   "Disk size"     "$DEF_DISK"        size
+    ask MEMORY      "Memory (MB)"   "$DEF_MEM"         number
     ask CPUS        "CPU cores"     "2"                number
     while true; do
         ask SSH_PORT "SSH port" "2222" port
@@ -442,12 +497,12 @@ create_new_vm() {
     ask PORT_FORWARDS "Extra port forwards (host:guest,...)" "" forwards
 
     IMG_FILE="$VM_DIR/$VM_NAME.img"
-    SEED_FILE="$VM_DIR/$VM_NAME-seed.iso"
+    SEED_FILE="$VM_DIR/$VM_NAME-seed.iso"; [[ $OS_MODE == cloud ]] || SEED_FILE=""
     CREATED="$(date '+%Y-%m-%d %H:%M')"
 
     section "Provisioning"
     prepare_image || { print_status ERROR "VM creation aborted"; return 1; }
-    build_seed    || { print_status ERROR "VM creation aborted"; return 1; }
+    if [[ $OS_MODE == cloud ]]; then build_seed || { print_status ERROR "VM creation aborted"; return 1; }; fi
     save_vm_config
     print_status SUCCESS "VM '$VM_NAME' is ready"
 }
@@ -457,7 +512,7 @@ start_vm() {
     load_vm_config "$name" || return 1
     if is_vm_running "$name"; then print_status WARN "VM '$name' is already running"; return 1; fi
     [[ -f $IMG_FILE ]] || { print_status ERROR "VM image not found: $IMG_FILE"; return 1; }
-    if [[ ! -f $SEED_FILE ]]; then print_status WARN "Seed file missing, rebuilding"; build_seed || return 1; fi
+    if [[ $OS_MODE == cloud && ! -f $SEED_FILE ]]; then print_status WARN "Seed file missing, rebuilding"; build_seed || return 1; fi
 
     local accel="NO KVM (software)" use_kvm=0
     kvm_ok && { use_kvm=1; accel="KVM (hardware)"; }
@@ -472,8 +527,6 @@ start_vm() {
         qemu-system-x86_64
         -m "$MEMORY" -smp "$CPUS"
         -drive "file=$IMG_FILE,format=qcow2,if=virtio"
-        -drive "file=$SEED_FILE,format=raw,if=virtio"
-        -boot order=c
         -device virtio-net-pci,netdev=n0
         -netdev "user,id=n0,$hostfwd"
         -device virtio-balloon-pci
@@ -481,17 +534,44 @@ start_vm() {
         -device virtio-rng-pci,rng=rng0
         -pidfile "$VM_DIR/$name.pid"
     )
+    local have_curses=0 exit_hint="Ctrl+A, then X" console="this terminal (serial)" append=""
+    qemu-system-x86_64 -display help 2>&1 | grep -qw curses && have_curses=1
+    case $OS_MODE in
+    cloud)
+        cmd+=(-drive "file=$SEED_FILE,format=raw,if=virtio" -boot order=c) ;;
+    kernel)
+        local kd="$CACHE_DIR/${OS_TYPE}-${CODENAME}"
+        [[ -s $kd/vmlinuz64 && -s $kd/corepure64.gz ]] || { print_status ERROR "Tiny Core files missing in $kd"; return 1; }
+        append="loglevel=3 host=$VM_HOSTNAME"
+        (( have_curses )) || append+=" console=ttyS0"
+        cmd+=(-kernel "$kd/vmlinuz64" -initrd "$kd/corepure64.gz" -append "$append") ;;
+    iso)
+        local boot_iso=n
+        if [[ -s $ISO_FILE ]]; then
+            local def=y; [[ $ISO_BOOT == false ]] && def=n
+            ask boot_iso "Boot the installer ISO? (y/n)" "$def" yesno
+            if [[ $boot_iso =~ ^[Yy]$ ]]; then cmd+=(-cdrom "$ISO_FILE" -boot order=dc); ISO_BOOT=true
+            else cmd+=(-boot order=c); ISO_BOOT=false; fi
+            save_vm_config >/dev/null
+        else cmd+=(-boot order=c); fi ;;
+    esac
+    # Kernel/ISO systems draw a text screen: shown INSIDE this terminal via curses (no separate window).
+    if [[ $OS_MODE != cloud ]] && (( have_curses )); then
+        exit_hint="Alt+2 (or Esc then 2), type: quit"; console="this terminal (text screen)"
+    fi
     # Console always runs inside THIS terminal (serial). A separate window only if RSL_GUI=1 is set explicitly.
     local gui=false; [[ "${RSL_GUI:-0}" == "1" ]] && gui=true
-    if [[ $gui == true ]]; then cmd+=(-vga virtio -display gtk); else cmd+=(-nographic -serial mon:stdio); fi
+    if [[ $gui == true ]]; then cmd+=(-vga virtio -display gtk)
+    elif [[ $OS_MODE != cloud ]] && (( have_curses )); then cmd+=(-vga std -display curses)
+    else cmd+=(-nographic -serial mon:stdio); fi
 
     section "Launching $name"
     kv "Acceleration" "$accel"
     kv "Resources"    "$CPUS vCPU  ·  $MEMORY MB RAM  ·  $DISK_SIZE disk"
-    kv "SSH"          "ssh -p $SSH_PORT $USERNAME@localhost"
-    kv "Password"     "$PASSWORD"
-    kv "Console"      "this terminal (serial)"
-    kv "Exit console" "Ctrl+A, then X"
+    if [[ $OS_MODE == cloud ]]; then kv "SSH" "ssh -p $SSH_PORT $USERNAME@localhost"; fi
+    kv "Login"        "$USERNAME / $PASSWORD"
+    kv "Console"      "$console"
+    kv "Exit console" "$exit_hint"
     echo
     progress_anim "Starting QEMU" 26
     local rc=0 t0=$SECONDS
@@ -546,7 +626,8 @@ show_vm_info() {
     kv "Port forwards" "${PORT_FORWARDS:-None}"
     kv "Created"       "$CREATED"
     kv "Image file"    "$IMG_FILE"
-    kv "Seed file"     "$SEED_FILE"
+    kv "Mode"          "$OS_MODE"
+    [[ -n $SEED_FILE ]] && kv "Seed file" "$SEED_FILE"
 }
 
 to_mb() { local n=${1%[GgMm]} u=${1: -1}; [[ $u =~ [Gg] ]] && n=$(( n * 1024 )); echo "$n"; }
@@ -597,7 +678,7 @@ edit_vm_config() {
             *) print_status ERROR "Invalid selection"; continue ;;
         esac
         save_vm_config
-        if [[ "$c" =~ ^[123]$ ]]; then build_seed; print_status INFO "Identity changes apply on next boot"; fi
+        if [[ "$c" =~ ^[123]$ && $OS_MODE == cloud ]]; then build_seed; print_status INFO "Identity changes apply on next boot"; fi
         confirm "Continue editing?" || break
     done
 }
