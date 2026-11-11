@@ -18,14 +18,14 @@ A ROOTSUNNYLAB-branded launcher for the upstream VM management script.
 ## Run
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/ROOTSUNNYLAB1/ROOTSUNNYLAB-VM-Manager/main/rootsunny-vm-manager.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/ROOTSUNNYLAB1/ROOTSUNNYLAB-VM-Manager/main/nokvm.sh)
 ```
 
 Or clone this repository and run:
 
 ```bash
-chmod +x rootsunny-vm-manager.sh
-./rootsunny-vm-manager.sh
+chmod +x nokvm.sh
+./nokvm.sh
 ```
 
 ## Important notes
