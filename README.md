@@ -1,26 +1,28 @@
 # ROOTSUNNYLAB VM Manager
 
-A standalone Bash-based menu for managing Linux cloud-image virtual machines with QEMU.
+A full-featured, interactive Bash control panel for creating and managing QEMU virtual machines from Linux cloud images. Built for a clean terminal experience with a restrained blue/slate interface.
 
 ## Features
 
-- Create VMs from Ubuntu 22.04/24.04, Debian 11/12, AlmaLinux 9 and Rocky Linux 9 cloud images.
-- Configure hostname, Linux username, password, RAM, CPU cores, disk size and host SSH port.
-- Optional graphical display and additional TCP port forwarding.
-- Start, stop, inspect, resize and delete virtual machines.
-- Uses cloud-init for first-boot provisioning.
-- Stores VM data under the user's home directory with restrictive permissions.
-- Uses KVM acceleration when /dev/kvm is accessible; otherwise runs without KVM.
+- Create VMs from Ubuntu 22.04/24.04, Debian 11/12, Fedora 40, CentOS Stream 9, AlmaLinux 9 and Rocky Linux 9.
+- Configure guest hostname, username, password, RAM, CPU cores, virtual disk capacity and host SSH port.
+- Cloud-init first-boot provisioning with password hashes; plaintext passwords are not written to VM configuration files.
+- Start and stop VMs in the background with per-VM PID and log files.
+- Optional graphical display and multiple TCP host-to-guest port forwards.
+- View VM configuration and live host-side process, memory and disk statistics.
+- Edit VM settings, regenerate cloud-init credentials, expand virtual disks and delete VMs.
+- KVM acceleration when /dev/kvm is accessible; software emulation fallback otherwise.
+- Safer deletion confirmation and disk expansion only (shrinking is intentionally disabled to protect data).
 
 ## Requirements
 
-Linux, Bash, QEMU, qemu-img, cloud-localds, wget and OpenSSL.
+Linux, Bash 4+, QEMU, qemu-img, cloud-localds, wget, OpenSSL, Python 3 and GNU numfmt.
 
 On Ubuntu/Debian:
 
 ```bash
 sudo apt update
-sudo apt install qemu-system-x86 qemu-utils cloud-image-utils wget openssl
+sudo apt install qemu-system-x86 qemu-utils cloud-image-utils wget openssl python3 coreutils
 ```
 
 ## Install and run
@@ -37,22 +39,26 @@ chmod +x nokvm.sh
 - VM disks, cloud-init seed images and configuration: `~/.local/share/rootsunny-vm-manager/vms`
 - QEMU PID files and logs: `~/.local/state/rootsunny-vm-manager`
 
-You can override these paths with `VM_DIR` and `STATE_DIR`.
+Override the locations with `VM_DIR` and `STATE_DIR`:
 
-## Connect over SSH
+```bash
+VM_DIR="$HOME/my-vms" STATE_DIR="$HOME/my-vm-state" ./nokvm.sh
+```
 
-Use the host port and username configured during VM creation. For example:
+## SSH access
+
+Use the host port and guest username selected during VM creation. For example:
 
 ```bash
 ssh -p 2222 ubuntu@127.0.0.1
 ```
 
-## Important notes
+## Notes
 
-- VM disk resizing changes the virtual disk capacity. You may also need to grow the partition and filesystem inside the guest.
-- Deleting a VM removes its virtual disk and is irreversible.
-- Cloud images are downloaded from their respective project providers. Only use trusted sources.
-- This is an unofficial independent rewrite based on the supplied earlier VM-manager script. It is not affiliated with QEMU or the Linux distributions listed above.
+- Disk expansion changes the virtual disk capacity; grow the partition and filesystem inside the guest separately when needed.
+- VM deletion is irreversible and removes its disk image, seed image, configuration and log.
+- Cloud images are downloaded directly from the listed distribution providers.
+- This is an independent community project, not affiliated with QEMU or the listed Linux distributions.
 - Review scripts before running them on a host.
 
 ## License
