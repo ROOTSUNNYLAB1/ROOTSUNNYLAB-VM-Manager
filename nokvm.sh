@@ -30,11 +30,11 @@ header(){
  |  _ <| |_| | |_| || | | |_| | |\  | |\  | |\  |
  |_| \_\\___/ \___/ |_|  \___/|_| \_|_| \_|_| \_|
 EOF
- printf '\033[0m  VM Manager v%s — ROOTSUNNYLAB\n\n' "$VERSION"
+ printf '\033[0m  ROOTSUNNYLAB  /  VM MANAGER  •  v%s\n\n' "$VERSION"
 }
 deps(){
  local x miss=()
- for x in qemu-system-x86_64 qemu-img cloud-localds wget openssl; do command -v "$x" >/dev/null 2>&1 || miss+=("$x"); done
+ for x in qemu-system-x86_64 qemu-img cloud-localds wget openssl python3 numfmt; do command -v "$x" >/dev/null 2>&1 || miss+=("$x"); done
  if (("${#miss[@]}")); then
   fail "Missing: ${miss[*]}"
   info "Ubuntu/Debian: sudo apt install qemu-system-x86 qemu-utils cloud-image-utils wget openssl"
@@ -57,7 +57,7 @@ pidfile(){ printf '%s/%s.pid' "$STATE_DIR" "$1"; }
 running(){
  local p; [[ -f "$(pidfile "$1")" ]] || return 1
  read -r p < "$(pidfile "$1")" || return 1
- [[ "$p" =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null
+ [[ "$p" =~ ^[0-9]+$ ]] && kill -0 "$p" 2>/dev/null && ps -p "$p" -o args= 2>/dev/null | grep -Fq -- "-name $1"
 }
 load(){
  valid_name "$1" || { fail "Invalid VM name."; return 1; }
@@ -187,7 +187,7 @@ stop_vm(){
 }
 list_vms(){ find "$VM_DIR" -maxdepth 1 -type f -name '*.conf' -printf '%f\n' 2>/dev/null | sed 's/\.conf$//' | sort; }
 select_vm(){
- local action="$1" -a vms=() n
+ local action="$1" n; local -a vms=()
  mapfile -t vms < <(list_vms)
  (("${#vms[@]}")) || { info "No VMs found."; pause; return; }
  local i; for i in "${!vms[@]}"; do printf ' %d) %s [%s]\n' "$((i+1))" "${vms[$i]}" "$(running "${vms[$i]}" && echo running || echo stopped)"; done
@@ -214,7 +214,11 @@ resize_vm(){
  running "$VM_NAME" && { fail "Stop VM before resizing."; return; }
  read -r -p "New disk size (current $DISK_SIZE): " size
  valid_size "$size" || { fail "Invalid size."; return; }
- qemu-img resize "$(disk "$VM_NAME")" "$size" && { DISK_SIZE="$size"; save; good "Disk image resized. Expand the guest filesystem separately."; }
+ local old_bytes new_bytes
+ old_bytes="$(qemu-img info --output=json "$(disk "$VM_NAME")" | python3 -c 'import json,sys;print(json.load(sys.stdin)["virtual-size"])')" || return
+ new_bytes="$(numfmt --from=iec "$size" 2>/dev/null)" || { fail "Could not parse disk size."; return; }
+ ((new_bytes >= old_bytes)) || { fail "Disk shrinking is disabled to protect VM data. Only expansion is supported."; return; }
+ qemu-img resize "$(disk "$VM_NAME")" "$size" && { DISK_SIZE="$size"; save; good "Disk expanded. Grow the guest filesystem separately if needed."; }
 }
 delete_vm(){
  load "$1" || return
