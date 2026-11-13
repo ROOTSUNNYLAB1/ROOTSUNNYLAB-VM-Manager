@@ -15,7 +15,7 @@ Create, run and manage Linux virtual machines from one clean, animated, auto-fit
 
 ## Features
 
-- **One script, no framework.** Everything lives in `rsl-vm-manager.sh`.
+- **One script, no framework.** Everything lives in `vm.sh`.
 - **18 ready-made systems.** Ubuntu, Debian, Fedora, CentOS Stream, AlmaLinux, Rocky Linux, Arch, openSUSE and Proxmox VE.
 - **Console in the same terminal.** The VM's serial console opens right where you are. No extra window pops up.
 - **Smart acceleration.** Uses KVM when it really works, otherwise falls back to software mode (NO KVM). If KVM is present but fails at start, it retries automatically without KVM.
@@ -73,10 +73,7 @@ For hardware acceleration the user running the script needs read/write access to
 ## Installation
 
 ```bash
-git clone https://github.com/ROOTSUNNYLAB1/ROOTSUNNYLAB-VM-Manager.git
-cd ROOTSUNNYLAB-VM-Manager
-chmod +x rsl-vm-manager.sh
-./rsl-vm-manager.sh
+bash <(curl -s https://raw.githubusercontent.com/ROOTSUNNYLAB1/ROOTSUNNYLAB-VM-Manager/refs/heads/main/vm.sh)
 ```
 
 ## Usage
