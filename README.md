@@ -144,7 +144,7 @@ Everything is optional and set through environment variables:
 Example:
 
 ```bash
-VM_DIR=/data/vms NO_ANIM=1 ./rsl-vm-manager.sh
+VM_DIR=/data/vms NO_ANIM=1 ./vm.sh
 ```
 
 ### Files
